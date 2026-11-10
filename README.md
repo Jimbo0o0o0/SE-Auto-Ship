@@ -1,4 +1,4 @@
-# SE Auto Ship Hull Generator 0.3.2
+# SE Auto Ship Hull Generator 0.3.3
 
 Factorio 2.1 / Space Exploration 0.7.x.
 
@@ -18,53 +18,49 @@ The previous command syntax remains supported:
 
     /se-generate-ship 13 31
 
-## Sphere perimeter revision
-The previous version used a thick annular band of bulkhead walls. Version 0.3.2
-replaces that band with a one-tile-thick, orthogonal staircase contour around the
-filled circular floor.
+## Sphere perimeter: thin continuity fix
+Version 0.3.3 removes the thick annular wall band introduced in 0.3.1/0.3.2.
 
-The contour is generated from the floor disk itself:
+It now starts with the one-tile digital-circle edge: floor cells that have at least
+one north/south/east/west neighbour outside the disk. It then adds only the
+single-tile connector needed for each diagonal-only join between two cells in that
+original edge. Connectors are chosen from the existing floor disk and are selected
+to stay as close to the outer radius as possible.
 
-1. For each row, calculate the left and right edge using
-   `floor(sqrt(radius^2 - y^2))`.
-2. Keep the edge tile on both sides of every row.
-3. Join consecutive row edges with a horizontal run on the wider row. All added
-   connector tiles are still within the disk.
-
-This is deliberately not a thickened ring. The short horizontal connector runs are
-the minimum stair-step geometry needed to avoid diagonal-only wall connections.
+Important: connectors are calculated from the original edge only. They are not
+recursively bridged, which avoids progressively filling the interior with walls.
 
 ## Validation against the supplied Space Exploration code
 The integrity source uses two different neighbour rules:
 
-- Floor/bulkhead discovery and console connectivity use 4-way neighbours
-  (north, south, east, west).
+- Floor/bulkhead discovery and console connectivity use 4-way neighbours.
 - Containment spreads to floor tiles using 8-way neighbours, including diagonals.
 
-The sphere generator now validates both conditions before placement:
+Before building, the sphere geometry is validated to ensure:
 
-- Every wall tile is in the floor disk.
-- All wall tiles form one 4-way-connected component.
-- An 8-way flood started outside the ship cannot reach any non-wall floor tile.
+- Every wall is on a floor tile.
+- The wall cells are one 4-way-connected component.
+- An 8-way flood started outside cannot reach a non-wall floor tile.
 
-The pointed hull generation method is unchanged in this revision.
+The pointed-hull method is unchanged.
 
 ## Default sphere (radius 10)
-The planned shape has:
+The geometry simulation reports:
 
 - 317 floor tiles
-- 76 bulkhead wall tiles (one-tile-thick contour)
-- 0 phantom tiles in the supplied weak-section scan
+- 76 wall tiles: 56 original digital-circle edge cells + 20 one-cell connectors
+- 0 phantom tiles in the source weak-section scan
 - 100% calculated streamline
-- 260 gross structural-stress estimate before the in-game empty-floor allowance and installed entities
+- 260 gross structural-stress estimate before the empty-floor allowance and any installed entities
 
-The 260 estimate is `317 - 76 * 0.75`, with no long/thin multiplier. The actual
-integrity calculation then applies the empty-floor allowance and adds stress from
-installed equipment, generators, containers, and fluids.
+The stress estimate uses the source values: 317 floor/bulkhead tiles minus
+76 × 0.75 wall credit. The actual game check then applies its empty-floor allowance
+and any installed equipment, generator, container, or fluid stress.
 
-The orthogonal-connectivity and containment checks were tested on the generated
-integer-grid layouts for radii 4–30. This is a geometry simulation, not a live
-Factorio test; the in-game console integrity check remains authoritative.
+The 4-way connectivity and 8-way containment simulations pass for radii 4–30.
+Streamline is calculated for each radius and is not guaranteed to be 100% at every
+radius. This is a geometry simulation, not a live Factorio test; the console's
+in-game integrity check remains authoritative.
 
 This is a hull generator only. Add propulsion and other required ship systems.
 Back up your save before testing.
