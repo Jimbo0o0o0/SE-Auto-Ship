@@ -1,38 +1,49 @@
-# SE Auto Ship Hull Generator 0.2.0
+# SE Auto Ship Hull Generator 0.3.0
 
 Factorio 2.1 / Space Exploration 0.7.x.
 
 ## Install
-Replace the previous `se-auto-ship` mod with this ZIP in your Factorio `mods` folder.
-Enable it and load your save.
+Replace the previous `se-auto-ship` mod with this version in your Factorio `mods` folder, enable it, and load your save.
 
-## Generate
-Stand in a clear construction area and run:
+## Generate a ship
+Stand in a clear construction area. The console is placed at your character's position.
 
-    /se-generate-ship
+Spherical hull (default radius 10):
 
-Optional dimensions:
+    /se-generate-ship sphere
+
+Choose a sphere radius (clamped to 4–30):
+
+    /se-generate-ship sphere 10
+
+Pointed-bow hull (defaults to 13 x 31):
+
+    /se-generate-ship pointed 13 31
+
+The previous command syntax remains supported:
 
     /se-generate-ship 13 31
 
-Width is clamped to 7–31 and length to 15–81; dimensions are made odd.
+## Validation against the supplied Space Exploration functions
+Before placing the hull, the generator evaluates the planned tile map using the formulas from:
 
-## Streamline geometry
-The previous version used a bow with a flat front edge. This version constructs the
-hull column-by-column. For each X column, its frontmost tile is:
+- `SpaceshipIntegrity.stop_integrity_check`: frontmost tile per X column, maximum number of columns sharing a front Y, left/right distinct front rows, and the combined streamline score.
+- `SpaceshipIntegrity.calculate_integrity_stress`: per-row widths, alternating front/back thin-section scan, phantom-tile cost, perimeter-wall credit, and the long/thin multiplier.
 
-    front_y(x) = bow_tip_y + abs(x - centre_x)
+After generation, it prints the calculated streamline percentage, estimated structural stress, floor-tile count, perimeter-wall count, and phantom-tile count. The estimate assumes the generated floors are all connected, each perimeter wall is recognized as a connected bulkhead, and no extra containers, fluids, equipment, or generators are installed. The console's actual integrity check remains authoritative.
 
-That creates a symmetric stepped/45-degree pointed bow. In the supplied
-`SpaceshipIntegrity.stop_integrity_check` formula, it produces at most two columns
-sharing any one front Y, and enough distinct front Y values on each side to saturate
-the flatness, left, and right factors. The resulting calculated streamline is 1.0
-(100%) for the supported odd widths.
+### Default sphere result
+For `/se-generate-ship sphere` (radius 10), the integer-grid disk contains:
+
+- 317 floor tiles
+- 56 perimeter bulkhead walls
+- 0 phantom tiles in the source function's weak-section scan
+- 100% calculated streamline
+- 275 estimated structural stress before any installed ship equipment or cargo
+
+The radius-10 sphere therefore stays below the source file's base structural integrity limit of 300 on hull geometry alone. Larger radii may exceed the base limit; research can increase the actual force limit.
 
 ## Notes
-The 100% claim is for the streamline calculation in the uploaded source file, assuming
-the integrity traversal recognizes the generated hull's floor and bulkhead tiles as
-connected. It is not a claim that the ship is flight-ready or stress-valid.
-This is a hull-only generator; add propulsion and other ship systems as needed.
-The mod has not been run in a Factorio game instance here. Back up your save before
-testing.
+The sphere is a filled circular disk on the game's tile grid (a 2D sphere silhouette), not a hollow shell. Its size is a radius in tiles. A rasterized circle does not score 100% streamline at every possible radius, so the generator reports the actual score instead of promising 100% for all sizes.
+
+This is a hull generator only. Add propulsion and other required ship systems separately. It has not been tested inside a running Factorio instance; back up your save before testing.
