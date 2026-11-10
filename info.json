@@ -1,0 +1,12 @@
+{
+  "name": "se-auto-ship",
+  "version": "0.2.0",
+  "title": "SE Auto Ship Hull Generator",
+  "author": "ChatGPT",
+  "factorio_version": "2.1",
+  "dependencies": [
+    "base >= 2.1.0",
+    "space-exploration >= 0.7.0"
+  ],
+  "description": "Generates a pointed-bow spaceship hull designed for 100% Space Exploration streamline."
+}
