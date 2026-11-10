@@ -91,23 +91,46 @@ local function build_sphere_plan(radius, origin_x, origin_y, tile_name)
     end
   end
 
-  -- SE's integrity traversal discovers and connects bulkheads in four
-  -- cardinal directions. A one-tile digital-circle edge can be only
-  -- diagonally adjacent at the octants, so it is not a valid connected wall.
-  -- Use the thinnest tested annulus that is both 4-way connected and seals
-  -- the interior against the later 8-way containment flood fill.
-  local inner_radius = radius - 2
-  if radius == 5 or radius == 6 then inner_radius = radius - 1 end
-  local inner_radius_squared = inner_radius * inner_radius
+  -- Build a one-tile-thick orthogonal contour around the filled disk.
+  -- A naive digital-circle edge has diagonal-only gaps: SE's first pass uses
+  -- 4-way connectivity for bulkheads, while its containment pass floods floors
+  -- in 8 directions. Join each pair of row edges on the wider row to create a
+  -- supercover staircase. This adds only the connector tiles needed to keep
+  -- the wall orthogonally continuous, while sealing diagonal containment gaps.
+  local max_x_by_y = {}
+  for dy = -radius, radius do
+    max_x_by_y[dy] = math.floor(math.sqrt(radius_squared - dy * dy))
+  end
 
-  for dx = -radius, radius do
-    for dy = -radius, radius do
-      if inside[dx] and inside[dx][dy]
-        and dx * dx + dy * dy >= inner_radius_squared then
-        boundary[#boundary + 1] = {x = origin_x + dx, y = origin_y + dy}
-      end
+  local boundary_seen = {}
+  local function add_boundary(dx, dy)
+    local key = tile_key(dx, dy)
+    if not boundary_seen[key] then
+      boundary_seen[key] = true
+      boundary[#boundary + 1] = {x = origin_x + dx, y = origin_y + dy}
     end
   end
+
+  -- Keep the left and right edge cell on every row.
+  for dy = -radius, radius do
+    local edge_x = max_x_by_y[dy]
+    add_boundary(edge_x, dy)
+    add_boundary(-edge_x, dy)
+  end
+
+  -- Connect consecutive row edges with a horizontal run on the wider row.
+  -- Every connector remains on a floor tile and the resulting closed contour
+  -- is one wall tile thick, not a multi-row annular band.
+  for dy = -radius, radius - 1 do
+    local x0 = max_x_by_y[dy]
+    local x1 = max_x_by_y[dy + 1]
+    local wall_y = x0 >= x1 and dy or (dy + 1)
+    for dx = math.min(x0, x1), math.max(x0, x1) do
+      add_boundary(dx, wall_y)
+      add_boundary(-dx, wall_y)
+    end
+  end
+
   return tiles, boundary
 end
 
@@ -140,6 +163,66 @@ local function walls_are_four_connected(boundary)
   end
   for key, _ in pairs(wall_set) do
     if not visited[key] then return false end
+  end
+  return true
+end
+
+-- Simulate the exterior side of SE's containment pass. That pass spreads to
+-- floor tiles in all 8 directions, so no non-wall floor tile may be reachable
+-- from outside while treating bulkhead tiles as blockers.
+local function walls_seal_eight_way(tiles, boundary)
+  local floor_set, wall_set = {}, {}
+  local min_x, max_x, min_y, max_y
+  for _, tile in ipairs(tiles) do
+    local x, y = tile.position.x, tile.position.y
+    floor_set[tile_key(x, y)] = true
+    min_x = min_x and math.min(min_x, x) or x
+    max_x = max_x and math.max(max_x, x) or x
+    min_y = min_y and math.min(min_y, y) or y
+    max_y = max_y and math.max(max_y, y) or y
+  end
+  for _, pos in ipairs(boundary) do
+    local key = tile_key(pos.x, pos.y)
+    if not floor_set[key] then return false end
+    wall_set[key] = true
+  end
+  if not min_x then return false end
+
+  local queue, visited = {}, {}
+  local function enqueue(x, y)
+    local key = tile_key(x, y)
+    if not wall_set[key] and not visited[key] then
+      visited[key] = true
+      queue[#queue + 1] = {x = x, y = y}
+    end
+  end
+
+  -- Seed the exterior on all four sides of a one-tile expanded bounding box.
+  for x = min_x - 1, max_x + 1 do
+    enqueue(x, min_y - 1)
+    enqueue(x, max_y + 1)
+  end
+  for y = min_y - 1, max_y + 1 do
+    enqueue(min_x - 1, y)
+    enqueue(max_x + 1, y)
+  end
+
+  local head = 1
+  while head <= #queue do
+    local current = queue[head]
+    head = head + 1
+    for dx = -1, 1 do
+      for dy = -1, 1 do
+        if dx ~= 0 or dy ~= 0 then
+          local nx, ny = current.x + dx, current.y + dy
+          local key = tile_key(nx, ny)
+          if floor_set[key] and not wall_set[key] then
+            return false -- exterior flood has leaked into the ship interior
+          end
+          enqueue(nx, ny)
+        end
+      end
+    end
   end
   return true
 end
@@ -232,7 +315,8 @@ local function validate_plan(tiles, boundary)
     max_flat = max_flat,
     width = width,
     height = height,
-    walls_four_connected = walls_are_four_connected(boundary)
+    walls_four_connected = walls_are_four_connected(boundary),
+    walls_seal_eight_way = walls_seal_eight_way(tiles, boundary)
   }
 end
 
@@ -267,6 +351,10 @@ local function generate_ship(player, shape, size_a, size_b)
   local validation = validate_plan(tiles, boundary)
   if not validation.walls_four_connected then
     player.print("[SE Auto Ship] Refusing to build: perimeter walls are not connected vertically/horizontally.")
+    return
+  end
+  if shape == "sphere" and not validation.walls_seal_eight_way then
+    player.print("[SE Auto Ship] Refusing to build: sphere perimeter leaves an 8-way containment leak.")
     return
   end
   local pad = 2
@@ -316,6 +404,9 @@ local function generate_ship(player, shape, size_a, size_b)
   end
   player.print(string.format("Validation: streamline %.2f%% | estimated structural stress %.1f", validation.streamline * 100, validation.structural_stress))
   player.print("Hull: " .. validation.tile_count .. " floor tiles, " .. walls_placed .. " perimeter walls, " .. string.format("%.2f", validation.phantom_tiles) .. " phantom tiles.")
+  if shape == "sphere" then
+    player.print("Sphere perimeter: one-tile-thick, 4-way connected and sealed against the 8-way containment flood.")
+  end
   if validation.streamline < 0.9999 then
     player.print("[SE Auto Ship] Note: this size's rasterized outline does not score 100% streamline.")
   end
