@@ -60,6 +60,12 @@ local function build_pointed_plan(width, length, origin_x, origin_y, tile_name)
       if col == -half_width or col == half_width or y == front_y or y == stern_y then
         add_boundary(x, y)
       end
+      -- The pointed front advances diagonally one tile per column. Add the
+      -- inboard tile behind each bow tile so adjacent wall entities touch
+      -- orthogonally instead of only at their corners.
+      if y == front_y then
+        add_boundary(x, y + 1)
+      end
     end
   end
   return tiles, boundary
@@ -85,21 +91,20 @@ local function build_sphere_plan(radius, origin_x, origin_y, tile_name)
     end
   end
 
-  local neighbours = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+  -- SE's integrity traversal discovers and connects bulkheads in four
+  -- cardinal directions. A one-tile digital-circle edge can be only
+  -- diagonally adjacent at the octants, so it is not a valid connected wall.
+  -- Use the thinnest tested annulus that is both 4-way connected and seals
+  -- the interior against the later 8-way containment flood fill.
+  local inner_radius = radius - 2
+  if radius == 5 or radius == 6 then inner_radius = radius - 1 end
+  local inner_radius_squared = inner_radius * inner_radius
+
   for dx = -radius, radius do
     for dy = -radius, radius do
-      if inside[dx] and inside[dx][dy] then
-        local is_boundary = false
-        for _, delta in ipairs(neighbours) do
-          local nx, ny = dx + delta[1], dy + delta[2]
-          if not (inside[nx] and inside[nx][ny]) then
-            is_boundary = true
-            break
-          end
-        end
-        if is_boundary then
-          boundary[#boundary + 1] = {x = origin_x + dx, y = origin_y + dy}
-        end
+      if inside[dx] and inside[dx][dy]
+        and dx * dx + dy * dy >= inner_radius_squared then
+        boundary[#boundary + 1] = {x = origin_x + dx, y = origin_y + dy}
       end
     end
   end
@@ -110,6 +115,35 @@ end
 -- SpaceshipIntegrity.stop_integrity_check() and calculate_integrity_stress().
 -- Assumes every generated tile is connected, perimeter walls are recognised as
 -- bulkheads, and no extra containers/generators/equipment are installed.
+local function walls_are_four_connected(boundary)
+  if #boundary == 0 then return false end
+  local wall_set = {}
+  for _, pos in ipairs(boundary) do
+    wall_set[tile_key(pos.x, pos.y)] = true
+  end
+  local first = boundary[1]
+  local queue = {{x = first.x, y = first.y}}
+  local visited = {[tile_key(first.x, first.y)] = true}
+  local head = 1
+  local directions = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+  while head <= #queue do
+    local current = queue[head]
+    head = head + 1
+    for _, delta in ipairs(directions) do
+      local nx, ny = current.x + delta[1], current.y + delta[2]
+      local key = tile_key(nx, ny)
+      if wall_set[key] and not visited[key] then
+        visited[key] = true
+        queue[#queue + 1] = {x = nx, y = ny}
+      end
+    end
+  end
+  for key, _ in pairs(wall_set) do
+    if not visited[key] then return false end
+  end
+  return true
+end
+
 local function validate_plan(tiles, boundary)
   local widths, front_by_x = {}, {}
   local min_x, max_x, min_y, max_y
@@ -197,7 +231,8 @@ local function validate_plan(tiles, boundary)
     phantom_tiles = phantom_tiles,
     max_flat = max_flat,
     width = width,
-    height = height
+    height = height,
+    walls_four_connected = walls_are_four_connected(boundary)
   }
 end
 
@@ -230,6 +265,10 @@ local function generate_ship(player, shape, size_a, size_b)
   end
 
   local validation = validate_plan(tiles, boundary)
+  if not validation.walls_four_connected then
+    player.print("[SE Auto Ship] Refusing to build: perimeter walls are not connected vertically/horizontally.")
+    return
+  end
   local pad = 2
   local area = {
     {origin_x - math.floor(validation.width / 2) - pad, origin_y - math.floor(validation.height / 2) - pad},
@@ -252,6 +291,11 @@ local function generate_ship(player, shape, size_a, size_b)
       raise_built = true
     }
     if wall then walls_placed = walls_placed + 1 end
+  end
+
+  if walls_placed ~= #boundary then
+    player.print("[SE Auto Ship] Warning: only " .. walls_placed .. " of " .. #boundary .. " perimeter walls were placed.")
+    player.print("The ship may fail integrity; repair missing walls before running the check.")
   end
 
   local console = surface.create_entity{
