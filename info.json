@@ -1,6 +1,6 @@
 {
   "name": "se-auto-ship",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "title": "SE Auto Ship Hull Generator",
   "author": "ChatGPT",
   "factorio_version": "2.1",
@@ -8,5 +8,5 @@
     "base >= 2.1.0",
     "space-exploration >= 0.7.0"
   ],
-  "description": "Generates pointed-bow and one-tile-thick spherical hulls with integrity validation."
+  "description": "Generates pointed-bow and thin, orthogonally connected spherical hulls with integrity validation."
 }
