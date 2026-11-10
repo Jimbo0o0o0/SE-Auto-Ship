@@ -221,7 +221,16 @@ local function walls_seal_eight_way(tiles, boundary)
   if not min_x then return false end
 
   local queue, visited = {}, {}
+  -- CRITICAL: keep the flood fill inside the finite expanded hull bounds.
+  -- Without these limits, every exterior tile is enqueued forever and the
+  -- Factorio main thread hangs while the command runs.
+  local flood_min_x, flood_max_x = min_x - 1, max_x + 1
+  local flood_min_y, flood_max_y = min_y - 1, max_y + 1
   local function enqueue(x, y)
+    if x < flood_min_x or x > flood_max_x
+      or y < flood_min_y or y > flood_max_y then
+      return
+    end
     local key = tile_key(x, y)
     if not wall_set[key] and not visited[key] then
       visited[key] = true
