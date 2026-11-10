@@ -1,4 +1,4 @@
-# SE Auto Ship Hull Generator 0.3.1
+# SE Auto Ship Hull Generator 0.3.2
 
 Factorio 2.1 / Space Exploration 0.7.x.
 
@@ -18,37 +18,53 @@ The previous command syntax remains supported:
 
     /se-generate-ship 13 31
 
-## Bulkhead connectivity fix
-Space Exploration's floor-connectivity and console-connectivity passes use four-way
-(neighbouring north/south/east/west) traversal. Diagonal corner contact is not enough.
-The containment pass also expands to diagonal neighbours, so the perimeter must seal
-the inside rather than leave diagonal leaks.
+## Sphere perimeter revision
+The previous version used a thick annular band of bulkhead walls. Version 0.3.2
+replaces that band with a one-tile-thick, orthogonal staircase contour around the
+filled circular floor.
 
-Version 0.3.1 changes both hulls:
+The contour is generated from the floor disk itself:
 
-- Sphere: uses a connected annular bulkhead band rather than only the single-tile
-  digital-circle edge. The default radius-10 hull uses 124 wall tiles; the ring is
-  four-way connected and blocks diagonal containment leaks.
-- Pointed bow: adds the inboard step behind each diagonal bow tile, connecting the
-  front bulkhead chain horizontally/vertically.
+1. For each row, calculate the left and right edge using
+   `floor(sqrt(radius^2 - y^2))`.
+2. Keep the edge tile on both sides of every row.
+3. Join consecutive row edges with a horizontal run on the wider row. All added
+   connector tiles are still within the disk.
 
-Before placement, the generator runs a four-way connectivity test over the planned
-wall positions and refuses to build if any wall is disconnected. It also warns if
-Factorio fails to place every wall entity.
+This is deliberately not a thickened ring. The short horizontal connector runs are
+the minimum stair-step geometry needed to avoid diagonal-only wall connections.
 
-## Default sphere validation
-For `/se-generate-ship sphere` (radius 10):
+## Validation against the supplied Space Exploration code
+The integrity source uses two different neighbour rules:
+
+- Floor/bulkhead discovery and console connectivity use 4-way neighbours
+  (north, south, east, west).
+- Containment spreads to floor tiles using 8-way neighbours, including diagonals.
+
+The sphere generator now validates both conditions before placement:
+
+- Every wall tile is in the floor disk.
+- All wall tiles form one 4-way-connected component.
+- An 8-way flood started outside the ship cannot reach any non-wall floor tile.
+
+The pointed hull generation method is unchanged in this revision.
+
+## Default sphere (radius 10)
+The planned shape has:
 
 - 317 floor tiles
-- 124 connected perimeter bulkhead walls
-- 0 phantom tiles in the weak-section scan
+- 76 bulkhead wall tiles (one-tile-thick contour)
+- 0 phantom tiles in the supplied weak-section scan
 - 100% calculated streamline
-- 224 estimated structural stress before additional ship entities
+- 260 gross structural-stress estimate before the in-game empty-floor allowance and installed entities
 
-This estimate mirrors the relevant source functions and assumes the game recognises
-all generated floor and wall tiles and that all floor tiles are connected to the
-console. The actual in-game integrity check remains authoritative. Cargo, generators,
-fluids, and other installed entities can increase stress.
+The 260 estimate is `317 - 76 * 0.75`, with no long/thin multiplier. The actual
+integrity calculation then applies the empty-floor allowance and adds stress from
+installed equipment, generators, containers, and fluids.
 
-This is a hull generator only; add propulsion and other required ship systems.
-Back up your save before testing; this mod has not been tested in a running game here.
+The orthogonal-connectivity and containment checks were tested on the generated
+integer-grid layouts for radii 4–30. This is a geometry simulation, not a live
+Factorio test; the in-game console integrity check remains authoritative.
+
+This is a hull generator only. Add propulsion and other required ship systems.
+Back up your save before testing.
