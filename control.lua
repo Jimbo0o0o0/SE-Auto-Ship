@@ -91,46 +91,78 @@ local function build_sphere_plan(radius, origin_x, origin_y, tile_name)
     end
   end
 
-  -- Build a one-tile-thick orthogonal contour around the filled disk.
-  -- A naive digital-circle edge has diagonal-only gaps: SE's first pass uses
-  -- 4-way connectivity for bulkheads, while its containment pass floods floors
-  -- in 8 directions. Join each pair of row edges on the wider row to create a
-  -- supercover staircase. This adds only the connector tiles needed to keep
-  -- the wall orthogonally continuous, while sealing diagonal containment gaps.
-  local max_x_by_y = {}
-  for dy = -radius, radius do
-    max_x_by_y[dy] = math.floor(math.sqrt(radius_squared - dy * dy))
-  end
-
-  local boundary_seen = {}
-  local function add_boundary(dx, dy)
-    local key = tile_key(dx, dy)
-    if not boundary_seen[key] then
-      boundary_seen[key] = true
+  -- Start with the actual one-tile digital-circle edge: floor cells with
+  -- at least one cardinal neighbour outside the filled disk.
+  local base_boundary = {}
+  local base_seen = {}
+  local function key(dx, dy) return tile_key(dx, dy) end
+  local function add_base(dx, dy)
+    local k = key(dx, dy)
+    if not base_seen[k] then
+      base_seen[k] = true
+      local pos = {x = dx, y = dy}
+      base_boundary[#base_boundary + 1] = pos
       boundary[#boundary + 1] = {x = origin_x + dx, y = origin_y + dy}
     end
   end
 
-  -- Keep the left and right edge cell on every row.
-  for dy = -radius, radius do
-    local edge_x = max_x_by_y[dy]
-    add_boundary(edge_x, dy)
-    add_boundary(-edge_x, dy)
-  end
-
-  -- Connect consecutive row edges with a horizontal run on the wider row.
-  -- Every connector remains on a floor tile and the resulting closed contour
-  -- is one wall tile thick, not a multi-row annular band.
-  for dy = -radius, radius - 1 do
-    local x0 = max_x_by_y[dy]
-    local x1 = max_x_by_y[dy + 1]
-    local wall_y = x0 >= x1 and dy or (dy + 1)
-    for dx = math.min(x0, x1), math.max(x0, x1) do
-      add_boundary(dx, wall_y)
-      add_boundary(-dx, wall_y)
+  local cardinal = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+  for dx = -radius, radius do
+    for dy = -radius, radius do
+      if inside[dx] and inside[dx][dy] then
+        local edge = false
+        for _, d in ipairs(cardinal) do
+          local nx, ny = dx + d[1], dy + d[2]
+          if not (inside[nx] and inside[nx][ny]) then
+            edge = true
+            break
+          end
+        end
+        if edge then add_base(dx, dy) end
+      end
     end
   end
 
+  -- SE discovers bulkheads with 4-way connectivity, but its containment pass
+  -- expands exterior floor in 8 directions. The raw digital-circle edge has
+  -- diagonal-only joins. For each diagonal pair of BASE edge cells, add only
+  -- one of the two orthogonal bridge cells, choosing the one closest to the
+  -- outer radius. Do not recursively bridge newly added cells: that would
+  -- progressively fill the interior and make a thick band.
+  local diagonal = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}
+  local connector_seen = {}
+  for _, pos in ipairs(base_boundary) do
+    local dx, dy = pos.x, pos.y
+    for _, d in ipairs(diagonal) do
+      local nx, ny = dx + d[1], dy + d[2]
+      if base_seen[key(nx, ny)] then
+        local x1, y1 = dx + d[1], dy
+        local x2, y2 = dx, dy + d[2]
+        local in1 = inside[x1] and inside[x1][y1]
+        local in2 = inside[x2] and inside[x2][y2]
+        local cx, cy
+        if in1 and in2 then
+          local r1, r2 = x1 * x1 + y1 * y1, x2 * x2 + y2 * y2
+          if r1 > r2 or (r1 == r2 and (x1 < x2 or (x1 == x2 and y1 < y2))) then
+            cx, cy = x1, y1
+          else
+            cx, cy = x2, y2
+          end
+        elseif in1 then
+          cx, cy = x1, y1
+        elseif in2 then
+          cx, cy = x2, y2
+        end
+        if cx then
+          local k = key(cx, cy)
+          if not base_seen[k] and not connector_seen[k] then
+            connector_seen[k] = true
+            boundary[#boundary + 1] = {x = origin_x + cx, y = origin_y + cy}
+          end
+        end
+      end
+    end
+  end
   return tiles, boundary
 end
 
