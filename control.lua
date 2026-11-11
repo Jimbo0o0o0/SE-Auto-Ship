@@ -284,6 +284,9 @@ local function validate_plan(tiles, boundary, console_x, console_y)
   for _, tile in ipairs(tiles) do
     local x, y = tile.position.x, tile.position.y
     local key = tile_key(x, y)
+    if floor_set[key] then
+      return {valid = false, reason = "duplicate-floor-position"}
+    end
     floor_set[key] = true
     widths[y] = (widths[y] or 0) + 1
     if not front_by_x[x] or y < front_by_x[x] then front_by_x[x] = y end
@@ -305,10 +308,11 @@ local function validate_plan(tiles, boundary, console_x, console_y)
     if not floor_set[key] then
       return {valid = false, reason = "wall-outside-floor"}
     end
-    if not wall_set[key] then
-      wall_set[key] = true
-      wall_count = wall_count + 1
+    if wall_set[key] then
+      return {valid = false, reason = "duplicate-wall-position"}
     end
+    wall_set[key] = true
+    wall_count = wall_count + 1
   end
 
   local console_key = tile_key(console_x, console_y)
@@ -577,6 +581,8 @@ local function generate_ship(player, shape, size_a, size_b)
   if not validation.valid then
     local reasons = {
       ["empty-plan"] = "the shape contains no floor tiles",
+      ["duplicate-floor-position"] = "the shape generator emitted the same floor tile more than once",
+      ["duplicate-wall-position"] = "the shape generator emitted the same wall position more than once",
       ["wall-outside-floor"] = "a wall is not placed on a spaceship floor tile",
       ["console-not-on-floor"] = "the console is not on a floor tile",
       ["console-on-bulkhead"] = "the console overlaps a bulkhead",
