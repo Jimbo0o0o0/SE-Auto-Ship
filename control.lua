@@ -71,6 +71,68 @@ local function build_pointed_plan(width, length, origin_x, origin_y, tile_name)
   return tiles, boundary
 end
 
+-- Filled isosceles triangle: a single-tile apex at the bow, widening
+-- evenly toward a flat stern. Width and length are odd tile dimensions.
+-- The side walls use one inboard connector tile whenever a sloped edge
+-- advances diagonally, keeping the perimeter 4-connected without thickening
+-- the entire side.
+local function build_triangle_plan(width, length, origin_x, origin_y, tile_name)
+  local half_width = math.floor(width / 2)
+  local half_length = math.floor(length / 2)
+  local tiles, boundary, boundary_seen = {}, {}, {}
+  local function add_boundary(x, y)
+    local key = tile_key(x, y)
+    if not boundary_seen[key] then
+      boundary_seen[key] = true
+      boundary[#boundary + 1] = {x = x, y = y}
+    end
+  end
+
+  local previous_left, previous_right
+  local steps = half_length * 2
+  for row = 0, steps do
+    local y = origin_y - half_length + row
+    local half_span = math.floor((row * half_width) / steps)
+    local left_x = origin_x - half_span
+    local right_x = origin_x + half_span
+
+    for x = left_x, right_x do
+      tiles[#tiles + 1] = {
+        name = tile_name,
+        position = {x = x, y = y}
+      }
+    end
+
+    add_boundary(left_x, y)
+    add_boundary(right_x, y)
+    if row == steps then
+      -- Flat stern closes the wide end of the triangle.
+      for x = left_x, right_x do
+        add_boundary(x, y)
+      end
+    end
+
+    if previous_left then
+      if left_x == previous_left - 1 then
+        -- Bridge the diagonal left-edge step with the closest inboard tile.
+        add_boundary(previous_left, y)
+      elseif left_x < previous_left - 1 then
+        -- The requested slope is too steep to maintain a one-tile wall.
+        return tiles, boundary, false
+      end
+      if right_x == previous_right + 1 then
+        add_boundary(previous_right, y)
+      elseif right_x > previous_right + 1 then
+        return tiles, boundary, false
+      end
+    end
+
+    previous_left, previous_right = left_x, right_x
+  end
+
+  return tiles, boundary, true
+end
+
 -- A filled, integer-grid disk. Boundary walls are placed on every floor tile
 -- with at least one cardinal neighbour outside the disk.
 local function build_sphere_plan(radius, origin_x, origin_y, tile_name)
@@ -566,15 +628,28 @@ local function generate_ship(player, shape, size_a, size_b)
   local origin_x = math.floor(player.position.x)
   local origin_y = math.floor(player.position.y)
   local tiles, boundary, radius
+  local width, length
   if shape == "sphere" then
     radius = clamp(math.floor(size_a or DEFAULT_SPHERE_RADIUS), MIN_SPHERE_RADIUS, MAX_SPHERE_RADIUS)
     tiles, boundary = build_sphere_plan(radius, origin_x, origin_y, tile_name)
   else
-    local width = clamp(math.floor(size_a or DEFAULT_WIDTH), MIN_WIDTH, MAX_WIDTH)
-    local length = clamp(math.floor(size_b or DEFAULT_LENGTH), MIN_LENGTH, MAX_LENGTH)
+    width = clamp(math.floor(size_a or DEFAULT_WIDTH), MIN_WIDTH, MAX_WIDTH)
+    length = clamp(math.floor(size_b or DEFAULT_LENGTH), MIN_LENGTH, MAX_LENGTH)
     if width % 2 == 0 then width = width - 1 end
     if length % 2 == 0 then length = length - 1 end
-    tiles, boundary = build_pointed_plan(width, length, origin_x, origin_y, tile_name)
+    if shape == "triangle" then
+      -- Limit side slope to at most one horizontal tile per vertical step,
+      -- otherwise a thin orthogonally connected perimeter is impossible.
+      if length < width then length = width end
+      local build_ok
+      tiles, boundary, build_ok = build_triangle_plan(width, length, origin_x, origin_y, tile_name)
+      if not build_ok then
+        player.print("[SE Auto Ship] Refusing triangle: its side slope cannot form a one-tile connected wall.")
+        return
+      end
+    else
+      tiles, boundary = build_pointed_plan(width, length, origin_x, origin_y, tile_name)
+    end
   end
 
   local validation = validate_plan(tiles, boundary, origin_x, origin_y)
@@ -650,6 +725,8 @@ local function generate_ship(player, shape, size_a, size_b)
 
   if shape == "sphere" then
     player.print("[SE Auto Ship] Generated sphere hull, radius " .. radius .. " (diameter " .. (radius * 2 + 1) .. ").")
+  elseif shape == "triangle" then
+    player.print("[SE Auto Ship] Generated triangular hull, " .. width .. " x " .. length .. " (apex bow, flat stern).")
   else
     player.print("[SE Auto Ship] Generated pointed-bow hull, " .. validation.width .. " x " .. validation.height .. ".")
   end
@@ -657,6 +734,8 @@ local function generate_ship(player, shape, size_a, size_b)
   player.print("Hull plan: " .. validation.tile_count .. " floor tiles, " .. walls_ghosted .. " wall ghosts, " .. string.format("%.2f", validation.phantom_tiles) .. " phantom tiles.")
   if shape == "sphere" then
     player.print("Sphere perimeter: one-tile-thick, 4-way connected and sealed against the 8-way containment flood.")
+  elseif shape == "triangle" then
+    player.print("Triangle perimeter: thin sloped sides with only the connector tiles needed for 4-way wall continuity.")
   end
   if validation.streamline < 0.9999 then
     player.print("[SE Auto Ship] Note: this size's rasterized outline does not score 100% streamline.")
@@ -669,7 +748,7 @@ local function generate_ship(player, shape, size_a, size_b)
 end
 
 commands.add_command("se-generate-ship",
-  "Generate an SE ship hull. Usage: /se-generate-ship [pointed [width] [length] | sphere [radius]]",
+  "Generate an SE ship hull. Usage: /se-generate-ship [pointed [width] [length] | triangle [width] [length] | sphere [radius]]",
   function(command)
     local player = game.get_player(command.player_index)
     if not player then return end
@@ -682,6 +761,10 @@ commands.add_command("se-generate-ship",
     if args[1] == "sphere" then
       shape = "sphere"
       size_a = tonumber(args[2]) or DEFAULT_SPHERE_RADIUS
+    elseif args[1] == "triangle" then
+      shape = "triangle"
+      size_a = tonumber(args[2]) or DEFAULT_WIDTH
+      size_b = tonumber(args[3]) or DEFAULT_LENGTH
     elseif args[1] == "pointed" then
       size_a = tonumber(args[2]) or DEFAULT_WIDTH
       size_b = tonumber(args[3]) or DEFAULT_LENGTH
