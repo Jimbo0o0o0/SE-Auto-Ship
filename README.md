@@ -5,6 +5,10 @@ Factorio 2.1 / Space Exploration 0.7.x.
 ## Generate
 Stand in a clear construction area. The console is placed at your character's position.
 
+Triangle
+    
+    /se-generate-ship triangle [width] [length]
+
 Sphere (default radius 10):
 
     /se-generate-ship sphere
