@@ -268,11 +268,23 @@ local function walls_seal_eight_way(tiles, boundary)
   return true
 end
 
-local function validate_plan(tiles, boundary)
+-- Shape-independent preflight model based on SE's
+-- SpaceshipIntegrity.stop_integrity_check() and
+-- SpaceshipIntegrity.calculate_integrity_stress().
+--
+-- This is a hull-only mirror: SE keeps these functions local, so another mod
+-- cannot safely call them directly. Cargo, equipment, fluids, generators and
+-- other integrity-affecting entities are deliberately excluded from this
+-- estimate. The real SE console check remains authoritative after construction.
+local function validate_plan(tiles, boundary, console_x, console_y)
+  local floor_set, wall_set = {}, {}
   local widths, front_by_x = {}, {}
   local min_x, max_x, min_y, max_y
+
   for _, tile in ipairs(tiles) do
     local x, y = tile.position.x, tile.position.y
+    local key = tile_key(x, y)
+    floor_set[key] = true
     widths[y] = (widths[y] or 0) + 1
     if not front_by_x[x] or y < front_by_x[x] then front_by_x[x] = y end
     min_x = min_x and math.min(min_x, x) or x
@@ -281,9 +293,149 @@ local function validate_plan(tiles, boundary)
     max_y = max_y and math.max(max_y, y) or y
   end
 
-  local width = max_x - min_x + 1
-  local height = max_y - min_y + 1
-  local average_x = math.floor((min_x + max_x + 1) / 2)
+  if not min_x then
+    return {valid = false, reason = "empty-plan"}
+  end
+
+  local wall_count = 0
+  for _, pos in ipairs(boundary) do
+    local key = tile_key(pos.x, pos.y)
+    -- SE recognizes a bulkhead only when the wall entity occupies a
+    -- spaceship-floor tile. Reject out-of-footprint walls.
+    if not floor_set[key] then
+      return {valid = false, reason = "wall-outside-floor"}
+    end
+    if not wall_set[key] then
+      wall_set[key] = true
+      wall_count = wall_count + 1
+    end
+  end
+
+  local console_key = tile_key(console_x, console_y)
+  if not floor_set[console_key] then
+    return {valid = false, reason = "console-not-on-floor"}
+  end
+  if wall_set[console_key] then
+    return {valid = false, reason = "console-on-bulkhead"}
+  end
+
+  local cardinal = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+  local diagonal = {
+    {-1, -1}, {-1, 0}, {-1, 1},
+    {0, -1},           {0, 1},
+    {1, -1},  {1, 0},  {1, 1}
+  }
+
+  -- SE floor-connectivity: every floor tile must be discoverable from the
+  -- console by north/south/east/west movement.
+  local floor_queue = {{x = console_x, y = console_y}}
+  local floor_seen = {[console_key] = true}
+  local floor_head = 1
+  while floor_head <= #floor_queue do
+    local current = floor_queue[floor_head]
+    floor_head = floor_head + 1
+    for _, d in ipairs(cardinal) do
+      local nx, ny = current.x + d[1], current.y + d[2]
+      local key = tile_key(nx, ny)
+      if floor_set[key] and not floor_seen[key] then
+        floor_seen[key] = true
+        floor_queue[#floor_queue + 1] = {x = nx, y = ny}
+      end
+    end
+  end
+  local connected_floor_count = 0
+  for _ in pairs(floor_seen) do connected_floor_count = connected_floor_count + 1 end
+  if connected_floor_count ~= #tiles then
+    return {valid = false, reason = "floor-not-four-connected"}
+  end
+
+  -- Additional generator requirement: the wall entities themselves must
+  -- form one orthogonally connected component.
+  if wall_count == 0 then
+    return {valid = false, reason = "no-walls"}
+  end
+  local first_wall
+  for _, pos in ipairs(boundary) do
+    first_wall = pos
+    break
+  end
+  local wall_queue = {{x = first_wall.x, y = first_wall.y}}
+  local wall_seen = {[tile_key(first_wall.x, first_wall.y)] = true}
+  local wall_head = 1
+  while wall_head <= #wall_queue do
+    local current = wall_queue[wall_head]
+    wall_head = wall_head + 1
+    for _, d in ipairs(cardinal) do
+      local nx, ny = current.x + d[1], current.y + d[2]
+      local key = tile_key(nx, ny)
+      if wall_set[key] and not wall_seen[key] then
+        wall_seen[key] = true
+        wall_queue[#wall_queue + 1] = {x = nx, y = ny}
+      end
+    end
+  end
+  local connected_wall_count = 0
+  for _ in pairs(wall_seen) do connected_wall_count = connected_wall_count + 1 end
+  if connected_wall_count ~= wall_count then
+    return {valid = false, reason = "walls-not-four-connected"}
+  end
+
+  -- SE containment: exterior cells are discovered next to the connected
+  -- floor component, then spread in 8 directions. They may not reach any
+  -- un-bulkheaded floor tile. Keep the simulation bounded to the hull bounds.
+  local flood_min_x, flood_max_x = min_x - 1, max_x + 1
+  local flood_min_y, flood_max_y = min_y - 1, max_y + 1
+  local exterior_queue, exterior_seen = {}, {}
+  local function enqueue_exterior(x, y)
+    if x < flood_min_x or x > flood_max_x
+      or y < flood_min_y or y > flood_max_y then
+      return
+    end
+    local key = tile_key(x, y)
+    if wall_set[key] or exterior_seen[key] then return end
+    if floor_set[key] then
+      -- SE would classify this as floor_exterior. The generator rejects any
+      -- such leak, rather than allowing an unstable disconnected section.
+      return false
+    end
+    exterior_seen[key] = true
+    exterior_queue[#exterior_queue + 1] = {x = x, y = y}
+    return true
+  end
+
+  -- SE's floor-connectivity pass seeds every cardinal neighbour that is not
+  -- a floor tile as exterior (including concave pockets).
+  for _, tile in ipairs(tiles) do
+    local x, y = tile.position.x, tile.position.y
+    for _, d in ipairs(cardinal) do
+      local nx, ny = x + d[1], y + d[2]
+      if not floor_set[tile_key(nx, ny)] then
+        if enqueue_exterior(nx, ny) == false then
+          return {valid = false, reason = "containment-leak"}
+        end
+      end
+    end
+  end
+
+  local exterior_head = 1
+  while exterior_head <= #exterior_queue do
+    local current = exterior_queue[exterior_head]
+    exterior_head = exterior_head + 1
+    for _, d in ipairs(diagonal) do
+      local nx, ny = current.x + d[1], current.y + d[2]
+      local key = tile_key(nx, ny)
+      if floor_set[key] and not wall_set[key] then
+        return {valid = false, reason = "containment-leak"}
+      end
+      enqueue_exterior(nx, ny)
+    end
+  end
+
+  -- Exact streamline geometry from stop_integrity_check(): one foremost
+  -- (minimum-y) tile per x-column, split around the SE average-x midpoint.
+  local max_x_exclusive = max_x + 1
+  local width = max_x_exclusive - min_x
+  local average_x = math.floor((min_x + max_x_exclusive) / 2)
   local front_by_y, left_by_y, right_by_y = {}, {}, {}
   local max_flat = 0
   for x, y in pairs(front_by_x) do
@@ -295,23 +447,24 @@ local function validate_plan(tiles, boundary)
       right_by_y[y] = true
     end
   end
-
   local function key_count(t)
     local n = 0
     for _ in pairs(t) do n = n + 1 end
     return n
   end
+  local streamline_flatness = math.min(1, (1 - (max_flat - 2) / (width - 2)) * 1.5)
+  local streamline_denominator = math.max(0.5, (width - 1) / 2.5)
+  local streamline_left = math.min(1, 2 * (key_count(left_by_y) - 1) / streamline_denominator)
+  local streamline_right = math.min(1, 2 * (key_count(right_by_y) - 1) / streamline_denominator)
+  local streamline = (streamline_flatness + streamline_left + streamline_right
+    + 3 * math.min(streamline_flatness, math.min(streamline_left, streamline_right))) / 6
 
-  local flatness = math.min(1, (1 - (max_flat - 2) / (width - 2)) * 1.5)
-  local denominator = math.max(0.5, (width - 1) / 2.5)
-  local left = math.min(1, 2 * (key_count(left_by_y) - 1) / denominator)
-  local right = math.min(1, 2 * (key_count(right_by_y) - 1) / denominator)
-  local streamline = (flatness + left + right + 3 * math.min(flatness, math.min(left, right))) / 6
-
-  -- Reproduce the alternating front/back weak-section scan.
-  local front_y, back_y = min_y, max_y
+  -- Exact phantom-tile scan from calculate_integrity_stress(). Note that SE
+  -- starts the back scan at the exclusive bottom bound (max_y + 1), and the
+  -- back-side denominator below intentionally matches the SE implementation.
+  local front_y, back_y = min_y, max_y + 1
   local front_max_width, back_max_width = 0, 0
-  local phantom_tiles = 0
+  local phantom_tiles, thin_section_count = 0, 0
   while front_y <= back_y do
     if front_max_width <= back_max_width then
       local row_width = widths[front_y]
@@ -322,6 +475,7 @@ local function validate_plan(tiles, boundary)
         if row_width < front_max_width / 2 then
           local hollow = front_max_width / 2 - row_width
           phantom_tiles = phantom_tiles + hollow * hollow / (front_max_width / 2)
+          thin_section_count = thin_section_count + 1
         end
       end
       front_y = front_y + 1
@@ -334,6 +488,7 @@ local function validate_plan(tiles, boundary)
         if row_width < back_max_width / 2 then
           local hollow = back_max_width / 2 - row_width
           phantom_tiles = phantom_tiles + hollow * hollow / (front_max_width / 2)
+          thin_section_count = thin_section_count + 1
         end
       end
       back_y = back_y - 1
@@ -341,23 +496,52 @@ local function validate_plan(tiles, boundary)
   end
 
   local tile_count = #tiles
-  local wall_count = #boundary
-  local average_row_width = tile_count / height
-  local length_ratio = height / average_row_width
-  local long_multiplier = math.max(1, 1 + 0.05 * (length_ratio - 4))
-  local structural_stress = (tile_count + phantom_tiles * 0.25 - wall_count * 0.75) * long_multiplier
+  local total_row_width = 0
+  local row_count = 0
+  for _, row_width in pairs(widths) do
+    total_row_width = total_row_width + row_width
+    row_count = row_count + 1
+  end
+  local average_row_width = total_row_width / math.max(1, row_count)
+  local hull_length = max_y + 1 - min_y
+
+  -- Hull-only version of SE structural stress:
+  -- tiles + phantom tile cost - wall credit, followed by long-ship multiplier.
+  local structural_stress = tile_count
+    + phantom_tiles * 0.25
+    - wall_count * 0.75
+  local long_multiplier = 1 + 0.05 * (hull_length / average_row_width - 4)
+  if long_multiplier > 1 then
+    structural_stress = structural_stress * long_multiplier
+  else
+    long_multiplier = 1
+  end
+
+  -- SE's corridor allowance discounts up to 10% of floor tile count for
+  -- clear connected tiles. For a hull-only ghost plan, assume wall tiles and
+  -- the console tile are occupied; any later entities may reduce this value.
+  local estimated_empty_tiles = math.max(0, tile_count - wall_count - 1)
+  local effective_empty_tiles = math.min(tile_count * 0.1, estimated_empty_tiles)
+  structural_stress = structural_stress - effective_empty_tiles
 
   return {
+    valid = true,
     streamline = streamline,
     structural_stress = structural_stress,
+    container_stress = 0,
+    total_stress = structural_stress,
     tile_count = tile_count,
     wall_count = wall_count,
     phantom_tiles = phantom_tiles,
-    max_flat = max_flat,
+    thin_section_count = thin_section_count,
+    estimated_empty_tiles = estimated_empty_tiles,
+    effective_empty_tiles = effective_empty_tiles,
+    long_multiplier = long_multiplier,
     width = width,
-    height = height,
-    walls_four_connected = walls_are_four_connected(boundary),
-    walls_seal_eight_way = walls_seal_eight_way(tiles, boundary)
+    height = hull_length,
+    floor_four_connected = true,
+    walls_four_connected = true,
+    walls_seal_eight_way = true
   }
 end
 
@@ -389,13 +573,19 @@ local function generate_ship(player, shape, size_a, size_b)
     tiles, boundary = build_pointed_plan(width, length, origin_x, origin_y, tile_name)
   end
 
-  local validation = validate_plan(tiles, boundary)
-  if not validation.walls_four_connected then
-    player.print("[SE Auto Ship] Refusing to build: perimeter walls are not connected vertically/horizontally.")
-    return
-  end
-  if shape == "sphere" and not validation.walls_seal_eight_way then
-    player.print("[SE Auto Ship] Refusing to build: sphere perimeter leaves an 8-way containment leak.")
+  local validation = validate_plan(tiles, boundary, origin_x, origin_y)
+  if not validation.valid then
+    local reasons = {
+      ["empty-plan"] = "the shape contains no floor tiles",
+      ["wall-outside-floor"] = "a wall is not placed on a spaceship floor tile",
+      ["console-not-on-floor"] = "the console is not on a floor tile",
+      ["console-on-bulkhead"] = "the console overlaps a bulkhead",
+      ["floor-not-four-connected"] = "not all floor tiles connect to the console orthogonally",
+      ["no-walls"] = "the hull has no bulkhead walls",
+      ["walls-not-four-connected"] = "bulkhead walls are not one orthogonally connected component",
+      ["containment-leak"] = "SE's 8-way exterior flood reaches an un-walled floor tile"
+    }
+    player.print("[SE Auto Ship] Refusing to place ghosts: " .. (reasons[validation.reason] or validation.reason))
     return
   end
   local pad = 2
@@ -457,7 +647,7 @@ local function generate_ship(player, shape, size_a, size_b)
   else
     player.print("[SE Auto Ship] Generated pointed-bow hull, " .. validation.width .. " x " .. validation.height .. ".")
   end
-  player.print(string.format("Validation: streamline %.2f%% | estimated structural stress %.1f", validation.streamline * 100, validation.structural_stress))
+  player.print(string.format("SE-matched hull estimate: streamline %.2f%% | structural stress %.1f | container stress %.1f", validation.streamline * 100, validation.structural_stress, validation.container_stress))
   player.print("Hull plan: " .. validation.tile_count .. " floor tiles, " .. walls_ghosted .. " wall ghosts, " .. string.format("%.2f", validation.phantom_tiles) .. " phantom tiles.")
   if shape == "sphere" then
     player.print("Sphere perimeter: one-tile-thick, 4-way connected and sealed against the 8-way containment flood.")
@@ -465,7 +655,8 @@ local function generate_ship(player, shape, size_a, size_b)
   if validation.streamline < 0.9999 then
     player.print("[SE Auto Ship] Note: this size's rasterized outline does not score 100% streamline.")
   end
-  player.print("Stress estimate excludes containers, fluids, equipment, and generators. Run the console integrity check for the in-game result.")
+  player.print("Estimate only: mirrors SE hull formulas, assuming completed wall entities and an otherwise empty ship. Cargo, fluids, equipment, generators and other entities are excluded.")
+  player.print("Actual SE integrity has NOT been checked: ghosts are not completed floor/wall entities. Build the ghosts, then run the spaceship console integrity check.")
   player.print("Created " .. tiles_ghosted .. " floor ghosts, " .. walls_ghosted .. " wall ghosts, and " .. (console_ghost and 1 or 0) .. " console ghost.")
   player.print("Construction robots can build these ghosts when materials and logistic coverage are available.")
   player.print("Hull only: add propulsion and other required ship systems separately.")
