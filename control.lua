@@ -410,32 +410,46 @@ local function generate_ship(player, shape, size_a, size_b)
     end
   end
 
-  surface.set_tiles(tiles, true, false, false, false)
-  local walls_placed = 0
+  -- Create ghosts for every floor tile, wall and console. Nothing is built
+  -- immediately; construction robots can fulfil the ghosts later.
+  local tiles_ghosted = 0
+  for _, tile in ipairs(tiles) do
+    local p = tile.position
+    local ghost = surface.create_entity{
+      name = "tile-ghost",
+      inner_name = tile.name,
+      position = {p.x + 0.5, p.y + 0.5},
+      force = player.force
+    }
+    if ghost then tiles_ghosted = tiles_ghosted + 1 end
+  end
+
+  local walls_ghosted = 0
   for _, pos in ipairs(boundary) do
-    local wall = surface.create_entity{
-      name = wall_name,
+    local ghost = surface.create_entity{
+      name = "entity-ghost",
+      inner_name = wall_name,
       position = {pos.x + 0.5, pos.y + 0.5},
       force = player.force,
-      raise_built = true
+      expires = false
     }
-    if wall then walls_placed = walls_placed + 1 end
+    if ghost then walls_ghosted = walls_ghosted + 1 end
   end
 
-  if walls_placed ~= #boundary then
-    player.print("[SE Auto Ship] Warning: only " .. walls_placed .. " of " .. #boundary .. " perimeter walls were placed.")
-    player.print("The ship may fail integrity; repair missing walls before running the check.")
-  end
-
-  local console = surface.create_entity{
-    name = console_name,
+  local console_ghost = surface.create_entity{
+    name = "entity-ghost",
+    inner_name = console_name,
     position = {origin_x + 0.5, origin_y + 0.5},
     force = player.force,
-    raise_built = true
+    expires = false
   }
-  if not console then
-    player.print("[SE Auto Ship] Hull and walls placed, but console placement failed.")
-    return
+  if not console_ghost then
+    player.print("[SE Auto Ship] Floor and wall ghosts created, but console ghost placement failed.")
+  end
+
+  if tiles_ghosted ~= #tiles or walls_ghosted ~= #boundary then
+    player.print("[SE Auto Ship] Warning: created " .. tiles_ghosted .. "/" .. #tiles .. " floor ghosts and " .. walls_ghosted .. "/" .. #boundary .. " wall ghosts.")
+    player.print("Check for obstructing entities or unsupported ghost placement positions.")
   end
 
   if shape == "sphere" then
@@ -444,7 +458,7 @@ local function generate_ship(player, shape, size_a, size_b)
     player.print("[SE Auto Ship] Generated pointed-bow hull, " .. validation.width .. " x " .. validation.height .. ".")
   end
   player.print(string.format("Validation: streamline %.2f%% | estimated structural stress %.1f", validation.streamline * 100, validation.structural_stress))
-  player.print("Hull: " .. validation.tile_count .. " floor tiles, " .. walls_placed .. " perimeter walls, " .. string.format("%.2f", validation.phantom_tiles) .. " phantom tiles.")
+  player.print("Hull plan: " .. validation.tile_count .. " floor tiles, " .. walls_ghosted .. " wall ghosts, " .. string.format("%.2f", validation.phantom_tiles) .. " phantom tiles.")
   if shape == "sphere" then
     player.print("Sphere perimeter: one-tile-thick, 4-way connected and sealed against the 8-way containment flood.")
   end
@@ -452,6 +466,8 @@ local function generate_ship(player, shape, size_a, size_b)
     player.print("[SE Auto Ship] Note: this size's rasterized outline does not score 100% streamline.")
   end
   player.print("Stress estimate excludes containers, fluids, equipment, and generators. Run the console integrity check for the in-game result.")
+  player.print("Created " .. tiles_ghosted .. " floor ghosts, " .. walls_ghosted .. " wall ghosts, and " .. (console_ghost and 1 or 0) .. " console ghost.")
+  player.print("Construction robots can build these ghosts when materials and logistic coverage are available.")
   player.print("Hull only: add propulsion and other required ship systems separately.")
 end
 
