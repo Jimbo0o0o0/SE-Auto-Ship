@@ -611,7 +611,84 @@ local function validate_plan(tiles, boundary, console_x, console_y)
   }
 end
 
-local function generate_ship(player, shape, size_a, size_b)
+-- Build a real blueprint item in the player's inventory. Blueprint tile
+-- coordinates are tile origins; entity coordinates are tile centers. Both
+-- are translated to a zero-based local coordinate system.
+local function create_hull_blueprint(player, tiles, boundary, tile_name, wall_name, console_name, origin_x, origin_y, shape)
+  local inventory = player.get_main_inventory()
+  if not inventory then
+    player.print("[SE Auto Ship] Cannot create blueprint: player inventory is unavailable.")
+    return false
+  end
+
+  local slot
+  for i = 1, #inventory do
+    local candidate = inventory[i]
+    if candidate and not candidate.valid_for_read then
+      slot = candidate
+      break
+    end
+  end
+  if not slot then
+    player.print("[SE Auto Ship] Cannot create blueprint: your main inventory has no empty slot.")
+    return false
+  end
+
+  local min_x, min_y = math.huge, math.huge
+  for _, tile in ipairs(tiles) do
+    min_x = math.min(min_x, tile.position.x)
+    min_y = math.min(min_y, tile.position.y)
+  end
+
+  local blueprint_tiles = {}
+  for _, tile in ipairs(tiles) do
+    blueprint_tiles[#blueprint_tiles + 1] = {
+      name = tile_name,
+      position = {x = tile.position.x - min_x, y = tile.position.y - min_y}
+    }
+  end
+
+  local blueprint_entities = {}
+  local entity_number = 1
+  for _, pos in ipairs(boundary) do
+    blueprint_entities[#blueprint_entities + 1] = {
+      entity_number = entity_number,
+      name = wall_name,
+      position = {x = pos.x - min_x + 0.5, y = pos.y - min_y + 0.5},
+      direction = defines.direction.north
+    }
+    entity_number = entity_number + 1
+  end
+  blueprint_entities[#blueprint_entities + 1] = {
+    entity_number = entity_number,
+    name = console_name,
+    position = {x = origin_x - min_x + 0.5, y = origin_y - min_y + 0.5},
+    direction = defines.direction.north
+  }
+
+  slot.set_stack({name = "blueprint"})
+  if not slot.valid_for_read or slot.name ~= "blueprint" then
+    player.print("[SE Auto Ship] Cannot create blueprint: failed to create blueprint item.")
+    return false
+  end
+
+  local ok, err = pcall(function()
+    slot.set_blueprint_entities(blueprint_entities)
+    slot.set_blueprint_tiles(blueprint_tiles)
+    slot.label = "SE Auto Ship - " .. shape
+  end)
+  if not ok then
+    slot.clear()
+    player.print("[SE Auto Ship] Blueprint setup failed: " .. tostring(err))
+    return false
+  end
+
+  player.print("[SE Auto Ship] Blueprint created in your main inventory: " .. #blueprint_tiles
+    .. " floor tiles, " .. (#boundary + 1) .. " entities.")
+  return true
+end
+
+local function generate_ship(player, shape, size_a, size_b, output_mode)
   local surface = player.surface
   local tile_name, console_name, wall_name, tile_matches, console_matches, wall_matches = find_parts()
   if not tile_name or not console_name or not wall_name then
@@ -669,6 +746,26 @@ local function generate_ship(player, shape, size_a, size_b)
     player.print("[SE Auto Ship] Refusing to place ghosts: " .. (reasons[validation.reason] or validation.reason))
     return
   end
+  if output_mode == "blueprint" then
+    if not create_hull_blueprint(player, tiles, boundary, tile_name, wall_name, console_name,
+      origin_x, origin_y, shape) then
+      return
+    end
+    local output_count = #boundary + 1
+    if shape == "sphere" then
+      player.print("[SE Auto Ship] Blueprint shape: sphere, radius " .. radius .. ".")
+    elseif shape == "triangle" then
+      player.print("[SE Auto Ship] Blueprint shape: triangle, " .. width .. " x " .. length .. ".")
+    else
+      player.print("[SE Auto Ship] Blueprint shape: pointed, " .. width .. " x " .. length .. ".")
+    end
+    player.print(string.format("SE-matched hull estimate: streamline %.2f%% | structural stress %.1f | container stress %.1f",
+      validation.streamline * 100, validation.structural_stress, validation.container_stress))
+    player.print("Estimate only; the actual SE console integrity check happens after the blueprint is built.")
+    player.print("The blueprint is in your main inventory. No ghosts or world entities were placed.")
+    return
+  end
+
   local pad = 2
   local area = {
     {origin_x - math.floor(validation.width / 2) - pad, origin_y - math.floor(validation.height / 2) - pad},
@@ -746,6 +843,35 @@ local function generate_ship(player, shape, size_a, size_b)
   player.print("Construction robots can build these ghosts when materials and logistic coverage are available.")
   player.print("Hull only: add propulsion and other required ship systems separately.")
 end
+
+commands.add_command("se-blueprint-ship",
+  "Create an SE ship hull blueprint. Usage: /se-blueprint-ship [pointed [width] [length] | triangle [width] [length] | sphere [radius]]",
+  function(command)
+    local player = game.get_player(command.player_index)
+    if not player then return end
+    local args = {}
+    for token in string.gmatch(command.parameter or "", "%S+") do
+      args[#args + 1] = token
+    end
+    local shape = "pointed"
+    local size_a, size_b
+    if args[1] == "sphere" then
+      shape = "sphere"
+      size_a = tonumber(args[2]) or DEFAULT_SPHERE_RADIUS
+    elseif args[1] == "triangle" then
+      shape = "triangle"
+      size_a = tonumber(args[2]) or DEFAULT_WIDTH
+      size_b = tonumber(args[3]) or DEFAULT_LENGTH
+    elseif args[1] == "pointed" then
+      size_a = tonumber(args[2]) or DEFAULT_WIDTH
+      size_b = tonumber(args[3]) or DEFAULT_LENGTH
+    else
+      size_a = tonumber(args[1]) or DEFAULT_WIDTH
+      size_b = tonumber(args[2]) or DEFAULT_LENGTH
+    end
+    generate_ship(player, shape, size_a, size_b, "blueprint")
+  end
+)
 
 commands.add_command("se-generate-ship",
   "Generate an SE ship hull. Usage: /se-generate-ship [pointed [width] [length] | triangle [width] [length] | sphere [radius]]",
