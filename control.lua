@@ -751,7 +751,6 @@ local function generate_ship(player, shape, size_a, size_b, output_mode)
       origin_x, origin_y, shape) then
       return
     end
-    local output_count = #boundary + 1
     if shape == "sphere" then
       player.print("[SE Auto Ship] Blueprint shape: sphere, radius " .. radius .. ".")
     elseif shape == "triangle" then
